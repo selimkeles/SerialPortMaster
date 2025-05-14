@@ -11,6 +11,7 @@ A universal PowerShell script for serial port communication that combines listen
 - Interactive mode for manual command entry
 - Special character support (STX, ETX, CR, LF, etc.)
 - Custom window title for multiple instances
+- Comprehensive logging of all communication with timestamps
 
 ## Usage
 
@@ -32,6 +33,7 @@ A universal PowerShell script for serial port communication that combines listen
 | -CommandDelay      | Delay between commands in milliseconds          | 1000           |
 | -Interactive       | Enable interactive mode                         | False          |
 | -RecursiveCommands | Loop through commands file repeatedly           | False          |
+| -LogFile           | File to log all sent and received data          |                |
 | -Preset            | Use predefined configuration                    |                |
 | -h                 | Display help message                            |                |
 
@@ -65,7 +67,13 @@ A universal PowerShell script for serial port communication that combines listen
 ### Interactive Mode with Preset Configuration
 
 ```powershell
-.\SerialPortMaster.ps1 -PortName COM5 -Preset Sniffer115200 -Interactive
+.\SerialPortMaster.ps1 -PortName COM5 -Preset Sniffer -Interactive
+```
+
+### Interactive Mode with Logging
+
+```powershell
+.\SerialPortMaster.ps1 -PortName COM5 -Preset Sniffer -Interactive -LogFile "serial_log.txt"
 ```
 
 ### Using Multiple Instances
@@ -74,10 +82,10 @@ You can run multiple instances with different window titles:
 
 ```powershell
 # First terminal
-.\SerialPortMaster.ps1 -PortName COM3 -WindowTitle "RF Receiver"
+.\SerialPortMaster.ps1 -PortName COM3 -WindowTitle "RF Receiver" -LogFile "receiver_log.txt"
 
 # Second terminal
-.\SerialPortMaster.ps1 -PortName COM4 -WindowTitle "RF Transmitter" -CommandFile rf_commands.txt -RecursiveCommands
+.\SerialPortMaster.ps1 -PortName COM4 -WindowTitle "RF Transmitter" -CommandFile rf_commands.txt -RecursiveCommands -LogFile "transmitter_log.txt"
 ```
 
 ## Command File Format
@@ -99,4 +107,15 @@ AT+MODE=4\r\n
 
 # Command with special characters
 \x02DATA REQUEST\x03\r\n
-``` 
+```
+
+## Log File Format
+
+When the `-LogFile` parameter is used, the script creates a detailed log with the following information:
+
+- Timestamps with millisecond precision
+- Direction indicators (SENT, RECV, INFO, ERROR)
+- Raw data with special characters represented in a readable format
+- Session start/end markers with configuration details
+
+This is especially useful for debugging communication issues or creating audit trails of device interactions. 

@@ -40,6 +40,9 @@ param (
     [switch]$RecursiveCommands,
     
     [Parameter(Mandatory=$false)]
+    [string]$LogFile,
+    
+    [Parameter(Mandatory=$false)]
     [switch]$h
 )
 
@@ -59,6 +62,7 @@ if ($h) {
     Write-Host "  -CommandDelay : Delay between commands in milliseconds (default: 1000)"
     Write-Host "  -Interactive  : Enable interactive mode"
     Write-Host "  -RecursiveCommands : Loop through commands file repeatedly"
+    Write-Host "  -LogFile      : File to log all sent and received data"
     Write-Host "  -Preset       : Use predefined configuration (Options: Sniffer, EnergyMeter, Default, RFEgypt)"
     Write-Host "  -h            : Display this help message`n"
     
@@ -115,6 +119,37 @@ switch ($Preset) {
 # Set the window title
 $host.UI.RawUI.WindowTitle = $WindowTitle
 
+# Initialize log file if specified
+if ($LogFile) {
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    Add-Content -Path $LogFile -Value "===== Serial Port Master Log - Started at $timestamp ====="
+    Add-Content -Path $LogFile -Value "Port: $PortName, BaudRate: $BaudRate, DataBits: $DataBits, Parity: $Parity, StopBits: $StopBits`n"
+}
+
+# Function to log data to the specified file
+function Write-Log {
+    param (
+        [string]$Message,
+        [string]$Direction,
+        [string]$RawData = ""
+    )
+    
+    if (-not $LogFile) {
+        return
+    }
+    
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
+    $logMessage = "[$timestamp] [$Direction] $Message"
+    
+    Add-Content -Path $LogFile -Value $logMessage
+    
+    # If raw data is provided, log it with special character representation
+    if ($RawData) {
+        $formattedData = Format-DisplayData -Data $RawData
+        Add-Content -Path $LogFile -Value $formattedData
+    }
+}
+
 # Function to parse special characters in command strings
 function Parse-SpecialCharacters {
     param (
@@ -140,6 +175,9 @@ function Display-ColorizedData {
     if ([string]::IsNullOrEmpty($Data)) {
         return
     }
+    
+    # Log received data if logging is enabled
+    Write-Log -Direction "RECV" -RawData $Data
     
     for ($i = 0; $i -lt $Data.Length; $i++) {
         $char = $Data[$i]
@@ -280,6 +318,8 @@ function Execute-CommandFile {
         $parsedCmd = Parse-SpecialCharacters -InputString $cmd
         $SerialPort.Write($parsedCmd)
         Write-Host "Sent: $cmd" -ForegroundColor Yellow
+        Write-Log -Direction "SENT" -Message $cmd
+        
         Start-Sleep -Milliseconds $Delay
         
         # Read any response
@@ -314,13 +354,16 @@ try {
     # Open the serial port
     $port.Open()
     Write-Host "Serial port $($port.PortName) opened with settings: $BaudRate,$DataBits,$Parity,$StopBits" -ForegroundColor Green
+    Write-Log -Direction "INFO" -Message "Serial port $($port.PortName) opened with settings: $BaudRate,$DataBits,$Parity,$StopBits"
 
     # Process command file if specified
     if ($CommandFile -and (Test-Path $CommandFile)) {
         Write-Host "Processing commands from file: $CommandFile" -ForegroundColor Yellow
+        Write-Log -Direction "INFO" -Message "Processing commands from file: $CommandFile"
         
         if ($RecursiveCommands) {
             Write-Host "Recursive command mode enabled. Will continuously loop through commands. Press Ctrl+C to stop." -ForegroundColor Green
+            Write-Log -Direction "INFO" -Message "Recursive command mode enabled"
             
             # Set counter to trigger garbage collection
             $loopCounter = 0
@@ -329,6 +372,7 @@ try {
             while ($true) {
                 Execute-CommandFile -FilePath $CommandFile -SerialPort $port -Delay $CommandDelay
                 Write-Host "Reached end of command file, restarting from beginning..." -ForegroundColor Yellow
+                Write-Log -Direction "INFO" -Message "Reached end of command file, restarting from beginning..."
                 
                 # Force garbage collection periodically
                 $loopCounter++
@@ -347,6 +391,7 @@ try {
     if ($Interactive) {
         Write-Host "Interactive mode enabled. Type your command and press Enter to send." -ForegroundColor Green
         Write-Host "Press ESC to exit interactive mode." -ForegroundColor Yellow
+        Write-Log -Direction "INFO" -Message "Interactive mode enabled"
         
         $inputBuffer = ""
         $promptShown = $false
@@ -376,6 +421,7 @@ try {
                 # Check for escape key to exit
                 if ($key.Key -eq [ConsoleKey]::Escape) {
                     Write-Host "`nExiting interactive mode." -ForegroundColor Yellow
+                    Write-Log -Direction "INFO" -Message "Exiting interactive mode"
                     $port.Close()
                     break
                 }
@@ -387,6 +433,8 @@ try {
                         $parsedInput = Parse-SpecialCharacters -InputString $inputBuffer
                         $port.Write($parsedInput)
                         Write-Host "Sent: $inputBuffer" -ForegroundColor Yellow
+                        Write-Log -Direction "SENT" -Message $inputBuffer
+                        
                         $inputBuffer = ""
                         $parsedInput = $null
                         $promptShown = $false
@@ -424,6 +472,8 @@ try {
         ($CommandFile -and -not $RecursiveCommands) -or
         ($Interactive -and -not $port.IsOpen)) {  # Fall back if interactive mode was exited
         Write-Host "Listening on port $($port.PortName)... Press Ctrl+C to stop." -ForegroundColor Green
+        Write-Log -Direction "INFO" -Message "Listening on port $($port.PortName)"
+        
         if (($Interactive -and -not $port.IsOpen)) {
             $port.Open()
         }
@@ -454,12 +504,21 @@ try {
     }
 } catch {
     Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Log -Direction "ERROR" -Message $_.Exception.Message
 } finally {
     # Close the port and clean up
     if ($port -and $port.IsOpen) {
         $port.Close()
         Write-Host "Port closed." -ForegroundColor Yellow
+        Write-Log -Direction "INFO" -Message "Port closed"
     }
+    
+    # Add log end marker if logging enabled
+    if ($LogFile) {
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        Add-Content -Path $LogFile -Value "`n===== Serial Port Master Log - Ended at $timestamp ====="
+    }
+    
     # Final garbage collection before exit
     [System.GC]::Collect()
 } 
