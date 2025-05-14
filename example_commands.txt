@@ -1,0 +1,18 @@
+# # Example command file for SerialPortMaster.ps1
+# # Lines starting with # are comments and will be ignored
+# # Special characters can be used with escape sequences:
+# # \x02 (STX), \x03 (ETX), \r (CR), \n (LF), \x1B (ESC)
+# 
+# # RF commands example
+# +++\r\n
+# AT+MODE=4\r\n
+# AT+RFSEND=11111111,W,HELLO_FROM_CTT\r\n
+# 
+# # Command with special characters example
+# \x02DATA REQUEST\x03\r\n
+# 
+# # Simple command example
+# HELLO WORLD\r\n 
+
++++\r\n
+AT+MODE=5\r\n
