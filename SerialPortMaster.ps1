@@ -43,6 +43,9 @@ param (
     [string]$LogFile,
     
     [Parameter(Mandatory=$false)]
+    [int]$MaxLogSizeMB = 100,
+    
+    [Parameter(Mandatory=$false)]
     [switch]$h
 )
 
@@ -63,6 +66,7 @@ if ($h) {
     Write-Host "  -Interactive  : Enable interactive mode"
     Write-Host "  -RecursiveCommands : Loop through commands file repeatedly"
     Write-Host "  -LogFile      : File to log all sent and received data"
+    Write-Host "  -MaxLogSizeMB : Maximum log file size in MB before rotation (default: 10)"
     Write-Host "  -Preset       : Use predefined configuration (Options: Sniffer, EnergyMeter, Default, RFEgypt)"
     Write-Host "  -h            : Display this help message`n"
     
@@ -119,11 +123,76 @@ switch ($Preset) {
 # Set the window title
 $host.UI.RawUI.WindowTitle = $WindowTitle
 
+# Log buffer and writer
+$script:logBuffer = New-Object System.Text.StringBuilder
+$script:logFlushCount = 0
+$script:logFlushThreshold = 50 # Flush after this many entries
+
 # Initialize log file if specified
 if ($LogFile) {
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    Add-Content -Path $LogFile -Value "===== Serial Port Master Log - Started at $timestamp ====="
-    Add-Content -Path $LogFile -Value "Port: $PortName, BaudRate: $BaudRate, DataBits: $DataBits, Parity: $Parity, StopBits: $StopBits`n"
+    
+    # Create directory if it doesn't exist
+    $logDir = Split-Path -Parent $LogFile
+    if ($logDir -and -not (Test-Path $logDir)) {
+        New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+    }
+    
+    # Initial log entries
+    $initialEntry = "===== Serial Port Master Log - Started at $timestamp =====`r`n"
+    $initialEntry += "Port: $PortName, BaudRate: $BaudRate, DataBits: $DataBits, Parity: $Parity, StopBits: $StopBits`r`n"
+    
+    # Write directly to file
+    [System.IO.File]::WriteAllText($LogFile, $initialEntry)
+}
+
+# Function to check log file size and rotate if needed
+function Check-LogFileSize {
+    if (-not $LogFile) {
+        return
+    }
+    
+    try {
+        $logFileInfo = Get-Item $LogFile -ErrorAction SilentlyContinue
+        if ($logFileInfo -and ($logFileInfo.Length / 1MB) -gt $MaxLogSizeMB) {
+            $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+            $backupName = "$($LogFile).$timestamp.bak"
+            Move-Item -Path $LogFile -Destination $backupName -Force
+            
+            # Create a new log file
+            $newFileHeader = "===== Serial Port Master Log (Continued) - Rotated at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') =====`r`n"
+            [System.IO.File]::WriteAllText($LogFile, $newFileHeader)
+            
+            Write-Host "Log file rotated to $backupName" -ForegroundColor Yellow
+        }
+    }
+    catch {
+        # Silently continue if we can't check/rotate log file
+    }
+}
+
+# Function to flush log buffer to file
+function Flush-LogBuffer {
+    if (-not $LogFile -or $script:logBuffer.Length -eq 0) {
+        return
+    }
+    
+    try {
+        # Check if log rotation is needed
+        Check-LogFileSize
+        
+        # Append buffer content to log file
+        [System.IO.File]::AppendAllText($LogFile, $script:logBuffer.ToString())
+        
+        # Clear the buffer
+        $script:logBuffer.Clear() | Out-Null
+        $script:logFlushCount = 0
+    }
+    catch {
+        # If we can't write to log file, clear buffer anyway to prevent memory leak
+        $script:logBuffer = New-Object System.Text.StringBuilder
+        $script:logFlushCount = 0
+    }
 }
 
 # Function to log data to the specified file
@@ -138,15 +207,29 @@ function Write-Log {
         return
     }
     
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
-    $logMessage = "[$timestamp] [$Direction] $Message"
-    
-    Add-Content -Path $LogFile -Value $logMessage
-    
-    # If raw data is provided, log it with special character representation
-    if ($RawData) {
-        $formattedData = Format-DisplayData -Data $RawData
-        Add-Content -Path $LogFile -Value $formattedData
+    try {
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
+        $logMessage = "[$timestamp] [$Direction] $Message`r`n"
+        
+        # Add to buffer
+        $script:logBuffer.Append($logMessage) | Out-Null
+        
+        # If raw data is provided, log it with special character representation
+        if ($RawData) {
+            $formattedData = Format-DisplayData -Data $RawData
+            $script:logBuffer.Append($formattedData).Append("`r`n") | Out-Null
+        }
+        
+        # Increment counter and flush if needed
+        $script:logFlushCount++
+        if ($script:logFlushCount -ge $script:logFlushThreshold) {
+            Flush-LogBuffer
+        }
+    }
+    catch {
+        # If we can't append to buffer, clear it to prevent memory leaks
+        $script:logBuffer.Clear() | Out-Null
+        $script:logFlushCount = 0
     }
 }
 
@@ -163,6 +246,17 @@ function Parse-SpecialCharacters {
                           -replace '\\x1B', [char]0x1B
     
     return $result
+}
+
+# Fast lookup table for control character display
+$script:ctrlCharLookup = @{
+    0 = "[NUL]"; 1 = "[SOH]"; 2 = "[STX]"; 3 = "[ETX]"; 4 = "[EOT]"
+    5 = "[ENQ]"; 6 = "[ACK]"; 7 = "[BEL]"; 8 = "[BS]";  9 = "[HT]"
+    10 = "[LF]"; 11 = "[VT]"; 12 = "[FF]"; 13 = "[CR]"; 14 = "[SO]"
+    15 = "[SI]"; 16 = "[DLE]"; 17 = "[DC1]"; 18 = "[DC2]"; 19 = "[DC3]"
+    20 = "[DC4]"; 21 = "[NAK]"; 22 = "[SYN]"; 23 = "[ETB]"; 24 = "[CAN]"
+    25 = "[EM]"; 26 = "[SUB]"; 27 = "[ESC]"; 28 = "[FS]"; 29 = "[GS]"
+    30 = "[RS]"; 31 = "[US]"; 127 = "[DEL]"
 }
 
 # Function to display data with colorized special characters
@@ -185,42 +279,9 @@ function Display-ColorizedData {
         
         # Display control characters with special coloring
         if ($byte -lt 32 -or $byte -eq 127) {
-            $ctrlChar = switch ($byte) {
-                0 { "[NUL]" }
-                1 { "[SOH]" }
-                2 { "[STX]" }
-                3 { "[ETX]" }
-                4 { "[EOT]" }
-                5 { "[ENQ]" }
-                6 { "[ACK]" }
-                7 { "[BEL]" }
-                8 { "[BS]" }
-                9 { "[HT]" }
-                10 { "[LF]" }
-                11 { "[VT]" }
-                12 { "[FF]" }
-                13 { "[CR]" }
-                14 { "[SO]" }
-                15 { "[SI]" }
-                16 { "[DLE]" }
-                17 { "[DC1]" }
-                18 { "[DC2]" }
-                19 { "[DC3]" }
-                20 { "[DC4]" }
-                21 { "[NAK]" }
-                22 { "[SYN]" }
-                23 { "[ETB]" }
-                24 { "[CAN]" }
-                25 { "[EM]" }
-                26 { "[SUB]" }
-                27 { "[ESC]" }
-                28 { "[FS]" }
-                29 { "[GS]" }
-                30 { "[RS]" }
-                31 { "[US]" }
-                127 { "[DEL]" }
-                default { $char }
-            }
+            # Get control character representation from lookup table
+            $ctrlChar = $script:ctrlCharLookup[$byte]
+            
             # Use Magenta for special characters to make them stand out
             Write-Host $ctrlChar -ForegroundColor Magenta -NoNewline
             if ($ctrlChar -eq "[LF]") {
@@ -235,7 +296,7 @@ function Display-ColorizedData {
     Write-Host ""
     
     # Force garbage collection to reduce memory usage
-    [System.GC]::Collect()
+    [System.GC]::Collect(0, [System.GCCollectionMode]::Optimized)
 }
 
 # Function to format and display special characters with color
@@ -244,7 +305,12 @@ function Format-DisplayData {
         [string]$Data
     )
     
-    $result = ""
+    if ([string]::IsNullOrEmpty($Data)) {
+        return ""
+    }
+    
+    # Use StringBuilder for better performance with large strings
+    $result = New-Object System.Text.StringBuilder($Data.Length * 2)
     
     for ($i = 0; $i -lt $Data.Length; $i++) {
         $char = $Data[$i]
@@ -252,49 +318,25 @@ function Format-DisplayData {
         
         # Format control characters for display
         if ($byte -lt 32 -or $byte -eq 127) {
-            $ctrlChar = switch ($byte) {
-                0 { "[NUL]" }
-                1 { "[SOH]" }
-                2 { "[STX]" }
-                3 { "[ETX]" }
-                4 { "[EOT]" }
-                5 { "[ENQ]" }
-                6 { "[ACK]" }
-                7 { "[BEL]" }
-                8 { "[BS]" }
-                9 { "[HT]" }
-                10 { "[LF]" }
-                11 { "[VT]" }
-                12 { "[FF]" }
-                13 { "[CR]" }
-                14 { "[SO]" }
-                15 { "[SI]" }
-                16 { "[DLE]" }
-                17 { "[DC1]" }
-                18 { "[DC2]" }
-                19 { "[DC3]" }
-                20 { "[DC4]" }
-                21 { "[NAK]" }
-                22 { "[SYN]" }
-                23 { "[ETB]" }
-                24 { "[CAN]" }
-                25 { "[EM]" }
-                26 { "[SUB]" }
-                27 { "[ESC]" }
-                28 { "[FS]" }
-                29 { "[GS]" }
-                30 { "[RS]" }
-                31 { "[US]" }
-                32 { " " }
-                127 { "[DEL]" }
-                default { $char }
+            # Get from lookup table
+            $ctrlChar = $script:ctrlCharLookup[$byte]
+            if ($ctrlChar) {
+                $result.Append($ctrlChar) | Out-Null
             }
-            $result += $ctrlChar
+            else {
+                # Fallback for any missing values
+                $result.Append(" ") | Out-Null
+            }
         } else {
-            $result += $char
+            $result.Append($char) | Out-Null
         }
     }
-    return $result
+    
+    # Convert to string and clean up
+    $resultString = $result.ToString()
+    $result = $null
+    
+    return $resultString
 }
 
 # Function to execute commands from file with memory optimization
@@ -335,10 +377,13 @@ function Execute-CommandFile {
         # Clear variables to help with memory
         $parsedCmd = $null
         $data = $null
+        
+        # Periodically flush log buffer
+        Flush-LogBuffer
     }
     
-    # Force garbage collection
-    [System.GC]::Collect()
+    # Clear command list
+    $commands = $null
 }
 
 # Configure serial port
@@ -355,15 +400,18 @@ try {
     $port.Open()
     Write-Host "Serial port $($port.PortName) opened with settings: $BaudRate,$DataBits,$Parity,$StopBits" -ForegroundColor Green
     Write-Log -Direction "INFO" -Message "Serial port $($port.PortName) opened with settings: $BaudRate,$DataBits,$Parity,$StopBits"
+    Flush-LogBuffer
 
     # Process command file if specified
     if ($CommandFile -and (Test-Path $CommandFile)) {
         Write-Host "Processing commands from file: $CommandFile" -ForegroundColor Yellow
         Write-Log -Direction "INFO" -Message "Processing commands from file: $CommandFile"
+        Flush-LogBuffer
         
         if ($RecursiveCommands) {
             Write-Host "Recursive command mode enabled. Will continuously loop through commands. Press Ctrl+C to stop." -ForegroundColor Green
             Write-Log -Direction "INFO" -Message "Recursive command mode enabled"
+            Flush-LogBuffer
             
             # Set counter to trigger garbage collection
             $loopCounter = 0
@@ -373,17 +421,18 @@ try {
                 Execute-CommandFile -FilePath $CommandFile -SerialPort $port -Delay $CommandDelay
                 Write-Host "Reached end of command file, restarting from beginning..." -ForegroundColor Yellow
                 Write-Log -Direction "INFO" -Message "Reached end of command file, restarting from beginning..."
+                Flush-LogBuffer
                 
                 # Force garbage collection periodically
                 $loopCounter++
                 if ($loopCounter % 5 -eq 0) {
-                    [System.GC]::Collect()
                     $loopCounter = 0
                 }
             }
         } else {
             # Execute commands once
             Execute-CommandFile -FilePath $CommandFile -SerialPort $port -Delay $CommandDelay
+            Flush-LogBuffer
         }
     }
     
@@ -392,6 +441,7 @@ try {
         Write-Host "Interactive mode enabled. Type your command and press Enter to send." -ForegroundColor Green
         Write-Host "Press ESC to exit interactive mode." -ForegroundColor Yellow
         Write-Log -Direction "INFO" -Message "Interactive mode enabled"
+        Flush-LogBuffer
         
         $inputBuffer = ""
         $promptShown = $false
@@ -422,7 +472,9 @@ try {
                 if ($key.Key -eq [ConsoleKey]::Escape) {
                     Write-Host "`nExiting interactive mode." -ForegroundColor Yellow
                     Write-Log -Direction "INFO" -Message "Exiting interactive mode"
+                    Flush-LogBuffer
                     $port.Close()
+                    $port.Dispose()
                     break
                 }
                 
@@ -457,10 +509,11 @@ try {
             # Small sleep to prevent CPU hogging
             Start-Sleep -Milliseconds 100
             
-            # Periodically force garbage collection
+            # Periodically force garbage collection and flush logs
             $cycleCounter++
-            if ($cycleCounter -ge 100) {
-                [System.GC]::Collect()
+            if ($cycleCounter -ge 20) {
+                Flush-LogBuffer
+                [System.GC]::Collect(0, [System.GCCollectionMode]::Optimized)
                 $cycleCounter = 0
             }
         }
@@ -473,6 +526,7 @@ try {
         ($Interactive -and -not $port.IsOpen)) {  # Fall back if interactive mode was exited
         Write-Host "Listening on port $($port.PortName)... Press Ctrl+C to stop." -ForegroundColor Green
         Write-Log -Direction "INFO" -Message "Listening on port $($port.PortName)"
+        Flush-LogBuffer
         
         if (($Interactive -and -not $port.IsOpen)) {
             $port.Open()
@@ -491,10 +545,11 @@ try {
                 }
                 Start-Sleep -Milliseconds 1000  # Longer sleep for better memory usage
                 
-                # Periodically force garbage collection
+                # Periodically force garbage collection and flush logs
                 $listenCounter++
-                if ($listenCounter -ge 10) {
-                    [System.GC]::Collect()
+                if ($listenCounter -ge 5) {
+                    Flush-LogBuffer
+                    [System.GC]::Collect(0, [System.GCCollectionMode]::Optimized)
                     $listenCounter = 0
                 }
             } catch [TimeoutException] {
@@ -505,20 +560,39 @@ try {
 } catch {
     Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
     Write-Log -Direction "ERROR" -Message $_.Exception.Message
+    Flush-LogBuffer
 } finally {
+    # Make sure to flush log buffer before exiting
+    Flush-LogBuffer
+    
     # Close the port and clean up
     if ($port -and $port.IsOpen) {
         $port.Close()
+        $port.Dispose()
         Write-Host "Port closed." -ForegroundColor Yellow
         Write-Log -Direction "INFO" -Message "Port closed"
+        Flush-LogBuffer
     }
     
     # Add log end marker if logging enabled
     if ($LogFile) {
         $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        Add-Content -Path $LogFile -Value "`n===== Serial Port Master Log - Ended at $timestamp ====="
+        $endMarker = "`r`n===== Serial Port Master Log - Ended at $timestamp ====="
+        
+        # Write directly to file
+        try {
+            [System.IO.File]::AppendAllText($LogFile, $endMarker)
+        }
+        catch {
+            # Ignore errors during shutdown
+        }
     }
+    
+    # Clear variables
+    $script:logBuffer = $null
+    $port = $null
     
     # Final garbage collection before exit
     [System.GC]::Collect()
+    [System.GC]::WaitForPendingFinalizers()
 } 

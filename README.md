@@ -12,6 +12,7 @@ A universal PowerShell script for serial port communication that combines listen
 - Special character support (STX, ETX, CR, LF, etc.)
 - Custom window title for multiple instances
 - Comprehensive logging of all communication with timestamps
+- Automatic log file rotation to prevent excessive disk usage
 
 ## Usage
 
@@ -34,6 +35,7 @@ A universal PowerShell script for serial port communication that combines listen
 | -Interactive       | Enable interactive mode                         | False          |
 | -RecursiveCommands | Loop through commands file repeatedly           | False          |
 | -LogFile           | File to log all sent and received data          |                |
+| -MaxLogSizeMB      | Maximum log file size in MB before rotation     | 10             |
 | -Preset            | Use predefined configuration                    |                |
 | -h                 | Display help message                            |                |
 
@@ -74,6 +76,12 @@ A universal PowerShell script for serial port communication that combines listen
 
 ```powershell
 .\SerialPortMaster.ps1 -PortName COM5 -Preset Sniffer -Interactive -LogFile "serial_log.txt"
+```
+
+### Logging with Custom Maximum Log Size
+
+```powershell
+.\SerialPortMaster.ps1 -PortName COM5 -Preset Sniffer -Interactive -LogFile "serial_log.txt" -MaxLogSizeMB 50
 ```
 
 ### Using Multiple Instances
@@ -118,4 +126,14 @@ When the `-LogFile` parameter is used, the script creates a detailed log with th
 - Raw data with special characters represented in a readable format
 - Session start/end markers with configuration details
 
-This is especially useful for debugging communication issues or creating audit trails of device interactions. 
+This is especially useful for debugging communication issues or creating audit trails of device interactions.
+
+### Log Rotation
+
+The script automatically manages log file size by rotating logs when they exceed the specified size (default: 10MB). When a log file reaches the maximum size:
+
+1. The current log file is renamed with a timestamp (e.g., `serial_log.txt.20230830_123456.bak`)
+2. A new log file is created to continue logging
+3. A rotation message is written to both console and the new log file
+
+This prevents logs from consuming excessive disk space during long-running sessions or high-volume communications. 
