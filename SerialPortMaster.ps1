@@ -20,7 +20,16 @@ param (
     
     [Parameter(Mandatory=$false)]
     [string]$StopBits = "One",
-    
+
+    [Parameter(Mandatory=$false)]
+    [switch]$RtsCts,
+
+    [Parameter(Mandatory=$false)]
+    [switch]$XonXoff,
+
+    [Parameter(Mandatory=$false)]
+    [int]$WriteTimeout = 5000,
+
     [Parameter(Mandatory=$false)]
     [string]$WindowTitle = "Serial Port Master",
     
@@ -60,6 +69,9 @@ if ($h) {
     Write-Host "  -Parity       : Parity (None, Even, Odd, Mark, Space) (default: None)"
     Write-Host "  -DataBits     : Data bits (5, 6, 7, 8) (default: 8)"
     Write-Host "  -StopBits     : Stop bits (One, Two, OnePointFive) (default: One)"
+    Write-Host "  -RtsCts       : Enable RTS/CTS hardware flow control"
+    Write-Host "  -XonXoff      : Enable XON/XOFF software flow control (can combine with -RtsCts)"
+    Write-Host "  -WriteTimeout : Write timeout in milliseconds; prevents hangs when CTS is never asserted (default: 5000, use -1 for infinite)"
     Write-Host "  -WindowTitle  : Terminal window title (default: Serial Port Master)"
     Write-Host "  -CommandFile  : File containing commands to send"
     Write-Host "  -CommandDelay : Delay between commands in milliseconds (default: 1000)"
@@ -120,6 +132,17 @@ switch ($Preset) {
     }
 }
 
+# Determine flow control (handshake) mode from -RtsCts / -XonXoff switches
+if ($RtsCts -and $XonXoff) {
+    $handshakeValue = [System.IO.Ports.Handshake]::RequestToSendXOnXOff
+} elseif ($RtsCts) {
+    $handshakeValue = [System.IO.Ports.Handshake]::RequestToSend
+} elseif ($XonXoff) {
+    $handshakeValue = [System.IO.Ports.Handshake]::XOnXOff
+} else {
+    $handshakeValue = [System.IO.Ports.Handshake]::None
+}
+
 # Set the window title
 $host.UI.RawUI.WindowTitle = $WindowTitle
 
@@ -140,7 +163,7 @@ if ($LogFile) {
     
     # Initial log entries
     $initialEntry = "===== Serial Port Master Log - Started at $timestamp =====`r`n"
-    $initialEntry += "Port: $PortName, BaudRate: $BaudRate, DataBits: $DataBits, Parity: $Parity, StopBits: $StopBits`r`n"
+    $initialEntry += "Port: $PortName, BaudRate: $BaudRate, DataBits: $DataBits, Parity: $Parity, StopBits: $StopBits, Handshake: $handshakeValue`r`n"
     
     # Write directly to file
     [System.IO.File]::WriteAllText($LogFile, $initialEntry)
@@ -358,10 +381,15 @@ function Execute-CommandFile {
         }
         
         $parsedCmd = Parse-SpecialCharacters -InputString $cmd
-        $SerialPort.Write($parsedCmd)
-        Write-Host "Sent: $cmd" -ForegroundColor Yellow
-        Write-Log -Direction "SENT" -Message $cmd
-        
+        try {
+            $SerialPort.Write($parsedCmd)
+            Write-Host "Sent: $cmd" -ForegroundColor Yellow
+            Write-Log -Direction "SENT" -Message $cmd
+        } catch [TimeoutException] {
+            Write-Host "Write timeout sending: $cmd" -ForegroundColor Red
+            Write-Log -Direction "ERROR" -Message "Write timeout sending: $cmd"
+        }
+
         Start-Sleep -Milliseconds $Delay
         
         # Read any response
@@ -394,12 +422,14 @@ try {
     $stopBitsValue = [System.IO.Ports.StopBits]::$StopBits
     
     $port = New-Object System.IO.Ports.SerialPort $PortName, $BaudRate, $parityValue, $DataBits, $stopBitsValue
+    $port.Handshake = $handshakeValue
     $port.ReadTimeout = 1000  # Set a timeout for read operations in milliseconds
-    
+    $port.WriteTimeout = $WriteTimeout  # Prevents Write() from blocking forever if flow control stalls
+
     # Open the serial port
     $port.Open()
-    Write-Host "Serial port $($port.PortName) opened with settings: $BaudRate,$DataBits,$Parity,$StopBits" -ForegroundColor Green
-    Write-Log -Direction "INFO" -Message "Serial port $($port.PortName) opened with settings: $BaudRate,$DataBits,$Parity,$StopBits"
+    Write-Host "Serial port $($port.PortName) opened with settings: $BaudRate,$DataBits,$Parity,$StopBits Handshake=$handshakeValue" -ForegroundColor Green
+    Write-Log -Direction "INFO" -Message "Serial port $($port.PortName) opened with settings: $BaudRate,$DataBits,$Parity,$StopBits Handshake=$handshakeValue"
     Flush-LogBuffer
 
     # Process command file if specified
@@ -483,10 +513,15 @@ try {
                     if ($inputBuffer.Length -gt 0) {
                         Write-Host ""  # New line after input
                         $parsedInput = Parse-SpecialCharacters -InputString $inputBuffer
-                        $port.Write($parsedInput)
-                        Write-Host "Sent: $inputBuffer" -ForegroundColor Yellow
-                        Write-Log -Direction "SENT" -Message $inputBuffer
-                        
+                        try {
+                            $port.Write($parsedInput)
+                            Write-Host "Sent: $inputBuffer" -ForegroundColor Yellow
+                            Write-Log -Direction "SENT" -Message $inputBuffer
+                        } catch [TimeoutException] {
+                            Write-Host "Write timeout sending: $inputBuffer" -ForegroundColor Red
+                            Write-Log -Direction "ERROR" -Message "Write timeout sending: $inputBuffer"
+                        }
+
                         $inputBuffer = ""
                         $parsedInput = $null
                         $promptShown = $false

@@ -5,6 +5,8 @@ A universal PowerShell script for serial port communication that combines listen
 ## Features
 
 - Configurable serial port settings (port, baud rate, parity, data bits, stop bits)
+- Flow control support: RTS/CTS (hardware) and XON/XOFF (software), independently or combined
+- Configurable write timeout to prevent hangs when flow control stalls
 - Predefined configurations for common scenarios
 - Send commands from a file with configurable delay
 - Recursive command execution mode
@@ -29,6 +31,9 @@ A universal PowerShell script for serial port communication that combines listen
 | -Parity            | Parity (None, Even, Odd, Mark, Space)           | None           |
 | -DataBits          | Data bits (5, 6, 7, 8)                          | 8              |
 | -StopBits          | Stop bits (One, Two, OnePointFive)              | One            |
+| -RtsCts            | Enable RTS/CTS hardware flow control            | False          |
+| -XonXoff           | Enable XON/XOFF software flow control           | False          |
+| -WriteTimeout      | Write timeout in ms (use -1 for infinite)       | 5000           |
 | -WindowTitle       | Terminal window title                           | Serial Port Master |
 | -CommandFile       | File containing commands to send                |                |
 | -CommandDelay      | Delay between commands in milliseconds          | 1000           |
@@ -45,6 +50,27 @@ A universal PowerShell script for serial port communication that combines listen
 - **EnergyMeter**: 9600 baud, 7 data bits, Even parity, 1 stop bit
 - **RFEgypt**: 38400 baud, 7 data bits, Even parity, 1 stop bit
 - **Default**: 9600 baud, 8 data bits, No parity, 1 stop bit
+
+Presets do not set flow control. Combine a preset with `-RtsCts` and/or `-XonXoff` if the target device requires it.
+
+### Flow Control
+
+`-RtsCts` and `-XonXoff` are independent switches and map to `System.IO.Ports.Handshake` as follows:
+
+| `-RtsCts` | `-XonXoff` | Handshake mode         |
+|-----------|------------|------------------------|
+| off       | off        | None (default)         |
+| on        | off        | RequestToSend          |
+| off       | on        | XOnXOff                |
+| on        | on        | RequestToSendXOnXOff   |
+
+The resolved handshake mode is printed on startup and written to the log header.
+
+#### Things to be aware of
+
+- **CTS must be asserted for writes to proceed with `-RtsCts`.** If the peer never raises CTS, every `Write()` would block forever. `-WriteTimeout` (default 5000 ms) bounds this: a timed-out write is logged as an `ERROR` entry and the session continues instead of hanging. Set `-WriteTimeout -1` to restore the previous infinite-wait behaviour, or increase it for slow peers.
+- **XON/XOFF consumes 0x11 (DC1) and 0x13 (DC3).** When `-XonXoff` is on, those two bytes are intercepted by the driver as flow-control signals and never reach the receive side, so `[DC1]` / `[DC3]` will not appear in the console output or log for that session. This is driver behaviour, not a bug.
+- **Flow control cannot be changed after the port is open** — stop the script and relaunch with different switches to change modes.
 
 ## Examples
 
@@ -70,6 +96,19 @@ A universal PowerShell script for serial port communication that combines listen
 
 ```powershell
 .\SerialPortMaster.ps1 -PortName COM5 -Preset Sniffer -Interactive
+```
+
+### Enabling Flow Control
+
+```powershell
+# Hardware flow control (RTS/CTS) with a 10-second write timeout
+.\SerialPortMaster.ps1 -PortName COM3 -BaudRate 115200 -RtsCts -WriteTimeout 10000
+
+# Software flow control (XON/XOFF)
+.\SerialPortMaster.ps1 -PortName COM3 -XonXoff
+
+# Both hardware and software flow control together
+.\SerialPortMaster.ps1 -PortName COM3 -RtsCts -XonXoff
 ```
 
 ### Interactive Mode with Logging
